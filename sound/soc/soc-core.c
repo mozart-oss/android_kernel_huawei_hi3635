@@ -2103,9 +2103,13 @@ unsigned int snd_soc_read(struct snd_soc_codec *codec, unsigned int reg)
 {
 	unsigned int ret;
 
-	ret = codec->read(codec, reg);
-	dev_dbg(codec->dev, "read %x => %x\n", reg, ret);
-	trace_snd_soc_reg_read(codec, reg, ret);
+	if (codec->read) {
+		ret = codec->read(codec, reg);
+		dev_dbg(codec->dev, "read %x => %x\n", reg, ret);
+		trace_snd_soc_reg_read(codec, reg, ret);
+	}
+	else
+		ret = -1;
 
 	return ret;
 }
@@ -2114,9 +2118,13 @@ EXPORT_SYMBOL_GPL(snd_soc_read);
 unsigned int snd_soc_write(struct snd_soc_codec *codec,
 			   unsigned int reg, unsigned int val)
 {
-	dev_dbg(codec->dev, "write %x = %x\n", reg, val);
-	trace_snd_soc_reg_write(codec, reg, val);
-	return codec->write(codec, reg, val);
+	if (codec->write) {
+		dev_dbg(codec->dev, "write %x = %x\n", reg, val);
+		trace_snd_soc_reg_write(codec, reg, val);
+		return codec->write(codec, reg, val);
+	}
+	else
+		return -1;
 }
 EXPORT_SYMBOL_GPL(snd_soc_write);
 
@@ -2139,31 +2147,28 @@ EXPORT_SYMBOL_GPL(snd_soc_bulk_write_raw);
  * Returns 1 for change, 0 for no change, or negative error code.
  */
 int snd_soc_update_bits(struct snd_soc_codec *codec, unsigned short reg,
-				unsigned int mask, unsigned int value)
+                unsigned int mask, unsigned int value)
 {
-	bool change;
-	unsigned int old, new;
-	int ret;
+    bool change;
+    unsigned int old, new;
+    int ret;
 
-	if (codec->using_regmap) {
-		ret = regmap_update_bits_check(codec->control_data, reg,
-					       mask, value, &change);
-	} else {
-		ret = snd_soc_read(codec, reg);
-		if (ret < 0)
-			return ret;
+    if (codec->using_regmap) {
+        ret = regmap_update_bits_check(codec->control_data, reg,
+                           mask, value, &change);
+    } else {
+        old = snd_soc_read(codec, reg);
+        new = (old & ~mask) | (value & mask);
+        change = old != new;
+        ret = change;
+        if (change)
+            snd_soc_write(codec, reg, new);
+    }
 
-		old = ret;
-		new = (old & ~mask) | (value & mask);
-		change = old != new;
-		if (change)
-			ret = snd_soc_write(codec, reg, new);
-	}
+    if (ret < 0)
+        return ret;
 
-	if (ret < 0)
-		return ret;
-
-	return change;
+    return change;
 }
 EXPORT_SYMBOL_GPL(snd_soc_update_bits);
 

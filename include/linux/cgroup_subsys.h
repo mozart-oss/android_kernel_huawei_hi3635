@@ -84,3 +84,10 @@ SUBSYS(bcache)
 #endif
 
 /* */
+
+#if IS_SUBSYS_ENABLED(CONFIG_CGROUP_IONICE)
+SUBSYS(ionice)
+#endif
+
+/* */
+

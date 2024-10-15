@@ -43,6 +43,7 @@
 #include <linux/sysctl.h>
 #include <linux/oom.h>
 #include <linux/prefetch.h>
+#include <linux/debugfs.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -132,6 +133,21 @@ struct scan_control {
 int vm_swappiness = 60;
 unsigned long vm_total_pages;	/* The total number of pages which the VM controls */
 
+#ifdef CONFIG_ARM64
+unsigned long vm_cache_limit_ratio;
+unsigned long vm_cache_limit_ratio_min;
+unsigned long vm_cache_limit_ratio_max;
+unsigned long vm_cache_limit_mbytes __read_mostly;
+unsigned long vm_cache_limit_mbytes_min;
+unsigned long vm_cache_limit_mbytes_max;
+unsigned long vm_cache_reclaim_s __read_mostly;
+unsigned long vm_cache_reclaim_s_min;
+unsigned long vm_cache_reclaim_weight __read_mostly;
+unsigned long vm_cache_reclaim_weight_min;
+unsigned long vm_cache_reclaim_weight_max;
+static DEFINE_PER_CPU(struct delayed_work, vmscan_work);
+#endif
+
 static LIST_HEAD(shrinker_list);
 static DECLARE_RWSEM(shrinker_rwsem);
 
@@ -155,6 +171,39 @@ static unsigned long get_lru_size(struct lruvec *lruvec, enum lru_list lru)
 	return zone_page_state(lruvec_zone(lruvec), NR_LRU_BASE + lru);
 }
 
+struct dentry *debug_file;
+
+static int debug_shrinker_show(struct seq_file *s, void *unused)
+{
+	struct shrinker *shrinker;
+	struct shrink_control sc;
+
+	sc.gfp_mask = -1;
+	sc.nr_to_scan = 0;
+
+	down_read(&shrinker_rwsem);
+	list_for_each_entry(shrinker, &shrinker_list, list) {
+		int num_objs;
+
+		num_objs = shrinker->shrink(shrinker, &sc);
+		seq_printf(s, "%pf %d\n", shrinker->shrink, num_objs);
+	}
+	up_read(&shrinker_rwsem);
+	return 0;
+}
+
+static int debug_shrinker_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, debug_shrinker_show, inode->i_private);
+}
+
+static const struct file_operations debug_shrinker_fops = {
+        .open = debug_shrinker_open,
+        .read = seq_read,
+        .llseek = seq_lseek,
+        .release = single_release,
+};
+
 /*
  * Add a shrinker callback to be called from the vm
  */
@@ -166,6 +215,15 @@ void register_shrinker(struct shrinker *shrinker)
 	up_write(&shrinker_rwsem);
 }
 EXPORT_SYMBOL(register_shrinker);
+
+static int __init add_shrinker_debug(void)
+{
+	debugfs_create_file("shrinker", 0644, NULL, NULL,
+			    &debug_shrinker_fops);
+	return 0;
+}
+
+late_initcall(add_shrinker_debug);
 
 /*
  * Remove one
@@ -2700,6 +2758,11 @@ loop_again:
 	sc.may_writepage = !laptop_mode;
 	count_vm_event(PAGEOUTRUN);
 
+#ifdef CONFIG_ARM64
+	if (vm_cache_limit_mbytes && page_cache_over_limit())
+		shrink_page_cache(GFP_KERNEL);
+#endif
+
 	do {
 		unsigned long lru_pages = 0;
 
@@ -3169,6 +3232,77 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 }
 #endif /* CONFIG_HIBERNATION */
 
+#ifdef CONFIG_ARM64
+static unsigned long __shrink_page_cache(gfp_t mask)
+{
+	struct scan_control sc = {
+		.gfp_mask = (mask = memalloc_noio_flags(mask)),
+		.may_writepage = !laptop_mode,
+		.nr_to_reclaim = SWAP_CLUSTER_MAX * vm_cache_reclaim_weight,
+		.may_unmap = 1,
+		.may_swap = 1,
+		.order = 0,
+		.priority = DEF_PRIORITY,
+		.target_mem_cgroup = NULL,
+		.nodemask = NULL,
+	};
+	struct shrink_control shrink = {
+		.gfp_mask = sc.gfp_mask,
+	};
+	struct zonelist *zonelist = node_zonelist(numa_node_id(), mask);
+
+	return do_try_to_free_pages(zonelist, &sc, &shrink);
+}
+
+void shrink_page_cache(gfp_t mask)
+{
+	/* We reclaim the highmem zone too, it is useful for 32bit arch */
+	__shrink_page_cache(mask | __GFP_HIGHMEM);
+}
+
+static void shrink_page_cache_work(struct work_struct *w)
+{
+	struct delayed_work *work = to_delayed_work(w);
+
+	if (vm_cache_reclaim_s == 0) {
+		schedule_delayed_work(work, round_jiffies_relative(120 * HZ));
+		return;
+	}
+
+	shrink_page_cache(GFP_KERNEL);
+	schedule_delayed_work(work,
+		round_jiffies_relative(vm_cache_reclaim_s * HZ));
+}
+
+static void shrink_page_cache_init(void)
+{
+	int cpu;
+
+	vm_cache_limit_ratio = 75;
+	vm_cache_limit_ratio_min = 0;
+	vm_cache_limit_ratio_max = 100;
+	vm_cache_limit_mbytes_min = 0;
+	vm_cache_limit_mbytes_max = totalram_pages >> (20 - PAGE_SHIFT);
+	vm_cache_limit_mbytes = vm_cache_limit_mbytes_max * 3 / 4;
+	vm_cache_reclaim_s = 0; /*300;*/
+	vm_cache_reclaim_s_min = 0;
+	vm_cache_reclaim_weight = 10;
+	vm_cache_reclaim_weight_min = 1;
+	vm_cache_reclaim_weight_max = 100;
+
+	/* temporarily close this feature*/
+	if (0 == vm_cache_reclaim_s)
+	    return;
+
+	for_each_online_cpu(cpu) {
+		struct delayed_work *work = &per_cpu(vmscan_work, cpu);
+		INIT_DEFERRABLE_WORK(work, shrink_page_cache_work);
+		schedule_delayed_work_on(cpu, work,
+			__round_jiffies_relative(vm_cache_reclaim_s * HZ, cpu));
+	}
+}
+#endif
+
 /* It's optimal to keep kswapds on the same CPUs as their memory, but
    not required for correctness.  So if the last cpu in a node goes
    away, we get changed to run anywhere: as the first one comes back,
@@ -3177,6 +3311,10 @@ static int cpu_callback(struct notifier_block *nfb, unsigned long action,
 			void *hcpu)
 {
 	int nid;
+#ifdef CONFIG_ARM64
+	long cpu = (long)hcpu;
+	struct delayed_work *work = &per_cpu(vmscan_work, cpu);
+#endif
 
 	if (action == CPU_ONLINE || action == CPU_ONLINE_FROZEN) {
 		for_each_node_state(nid, N_MEMORY) {
@@ -3190,6 +3328,24 @@ static int cpu_callback(struct notifier_block *nfb, unsigned long action,
 				set_cpus_allowed_ptr(pgdat->kswapd, mask);
 		}
 	}
+
+#ifdef CONFIG_ARM64
+	switch (action) {
+	case CPU_ONLINE:
+		if (work->work.func == NULL)
+			INIT_DEFERRABLE_WORK(work, shrink_page_cache_work);
+		schedule_delayed_work_on(cpu, work,
+			__round_jiffies_relative(vm_cache_reclaim_s * HZ, cpu));
+		break;
+	case CPU_DOWN_PREPARE:
+		cancel_delayed_work_sync(work);
+		work->work.func = NULL;
+		break;
+	default:
+		break;
+	}
+#endif
+
 	return NOTIFY_OK;
 }
 
@@ -3238,6 +3394,12 @@ static int __init kswapd_init(void)
 	for_each_node_state(nid, N_MEMORY)
  		kswapd_run(nid);
 	hotcpu_notifier(cpu_callback, 0);
+#ifdef CONFIG_ARM64
+	shrink_page_cache_init();
+#ifdef CONFIG_COMPACTION
+	compact_memory_init();
+#endif
+#endif
 	return 0;
 }
 

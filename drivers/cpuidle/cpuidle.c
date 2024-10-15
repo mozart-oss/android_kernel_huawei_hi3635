@@ -127,9 +127,17 @@ int cpuidle_idle_call(void)
 	if (!initialized)
 		return -ENODEV;
 
+#ifdef CONFIG_HISILICON_PLATFORM
+	local_fiq_disable();
+#endif
+
 	/* check if the device is ready */
-	if (!dev || !dev->enabled)
+	if (!dev || !dev->enabled) {
+#ifdef CONFIG_HISILICON_PLATFORM
+		local_fiq_enable();
+#endif
 		return -EBUSY;
+	}
 
 	drv = cpuidle_get_cpu_driver(dev);
 
@@ -141,6 +149,9 @@ int cpuidle_idle_call(void)
 		if (cpuidle_curr_governor->reflect)
 			cpuidle_curr_governor->reflect(dev, next_state);
 		local_irq_enable();
+#ifdef CONFIG_HISILICON_PLATFORM
+		local_fiq_enable();
+#endif
 		return 0;
 	}
 
@@ -165,6 +176,10 @@ int cpuidle_idle_call(void)
 	/* give the governor an opportunity to reflect on the outcome */
 	if (cpuidle_curr_governor->reflect)
 		cpuidle_curr_governor->reflect(dev, entered_state);
+
+#ifdef CONFIG_HISILICON_PLATFORM
+	local_fiq_enable();
+#endif
 
 	return 0;
 }
@@ -223,8 +238,10 @@ void cpuidle_pause(void)
 }
 
 /* Currently used in suspend/resume path to resume cpuidle */
+
 void cpuidle_resume(void)
 {
+
 	mutex_lock(&cpuidle_lock);
 	cpuidle_install_idle_handler();
 	mutex_unlock(&cpuidle_lock);
@@ -466,7 +483,11 @@ void cpuidle_unregister(struct cpuidle_driver *drv)
 	int cpu;
 	struct cpuidle_device *device;
 
+#ifdef CONFIG_CPU_IDLE_MULTIPLE_DRIVERS
+	for_each_cpu(cpu, drv->cpumask) {
+#else
 	for_each_possible_cpu(cpu) {
+#endif
 		device = &per_cpu(cpuidle_dev, cpu);
 		cpuidle_unregister_device(device);
 	}
@@ -497,8 +518,11 @@ int cpuidle_register(struct cpuidle_driver *drv,
 		pr_err("failed to register cpuidle driver\n");
 		return ret;
 	}
-
+#ifdef CONFIG_CPU_IDLE_MULTIPLE_DRIVERS
+	for_each_cpu(cpu, drv->cpumask) {
+#else
 	for_each_possible_cpu(cpu) {
+#endif
 		device = &per_cpu(cpuidle_dev, cpu);
 		device->cpu = cpu;
 

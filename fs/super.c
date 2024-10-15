@@ -767,10 +767,16 @@ cancel_readonly:
 	return retval;
 }
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+extern int blk_set_ro_secure_debuggable(int state);
+#endif
 static void do_emergency_remount(struct work_struct *work)
 {
 	struct super_block *sb, *p = NULL;
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+	blk_set_ro_secure_debuggable(0);
+#endif
 	spin_lock(&sb_lock);
 	list_for_each_entry(sb, &super_blocks, s_list) {
 		if (hlist_unhashed(&sb->s_instances))

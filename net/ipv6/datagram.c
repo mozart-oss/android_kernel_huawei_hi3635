@@ -162,14 +162,17 @@ ipv4_connected:
 	fl6.flowi6_mark = sk->sk_mark;
 	fl6.fl6_dport = inet->inet_dport;
 	fl6.fl6_sport = inet->inet_sport;
+	fl6.flowi6_uid = sock_i_uid(sk);
 
 	if (!fl6.flowi6_oif && (addr_type&IPV6_ADDR_MULTICAST))
 		fl6.flowi6_oif = np->mcast_oif;
 
 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
-	opt = flowlabel ? flowlabel->opt : np->opt;
+	rcu_read_lock();
+	opt = flowlabel ? flowlabel->opt : rcu_dereference(np->opt);
 	final_p = fl6_update_dst(&fl6, opt, &final);
+	rcu_read_unlock();
 
 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p, true);
 	err = 0;
@@ -318,7 +321,7 @@ void ipv6_local_rxpmtu(struct sock *sk, struct flowi6 *fl6, u32 mtu)
 /*
  *	Handle MSG_ERRQUEUE
  */
-int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
+int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct sock_exterr_skb *serr;
@@ -369,7 +372,6 @@ int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 					       &sin->sin6_addr);
 			sin->sin6_scope_id = 0;
 		}
-		*addr_len = sizeof(*sin);
 	}
 
 	memcpy(&errhdr.ee, &serr->ee, sizeof(struct sock_extended_err));

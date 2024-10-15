@@ -21,6 +21,7 @@ CFLAGS_trace_events_filter.o := -I$(src)
 
 obj-$(CONFIG_TRACE_CLOCK) += trace_clock.o
 
+obj-$(CONFIG_TRACE_KERNEL) += trace_kernel.o
 obj-$(CONFIG_FUNCTION_TRACER) += libftrace.o
 obj-$(CONFIG_RING_BUFFER) += ring_buffer.o
 obj-$(CONFIG_RING_BUFFER_BENCHMARK) += ring_buffer_benchmark.o
@@ -60,5 +61,11 @@ obj-$(CONFIG_KGDB_KDB) += trace_kdb.o
 endif
 obj-$(CONFIG_PROBE_EVENTS) += trace_probe.o
 obj-$(CONFIG_UPROBE_EVENT) += trace_uprobe.o
+obj-$(CONFIG_GPU_TRACEPOINTS) += gpu-traces.o
 
 libftrace-y := ftrace.o
+
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+CFLAGS_KERNEL += -DCONFIG_TRACE_DOT
+endif
+

@@ -178,10 +178,16 @@ struct vmalloc_info {
 #ifdef CONFIG_MMU
 #define VMALLOC_TOTAL (VMALLOC_END - VMALLOC_START)
 extern void get_vmalloc_info(struct vmalloc_info *vmi);
+extern void get_vmalloc_info_filtered(struct vmalloc_info *vmi, unsigned long flags);
 #else
 
 #define VMALLOC_TOTAL 0UL
 #define get_vmalloc_info(vmi)			\
+do {						\
+	(vmi)->used = 0;			\
+	(vmi)->largest_chunk = 0;		\
+} while (0)
+#define get_vmalloc_info_filtered(vmi, flags)			\
 do {						\
 	(vmi)->used = 0;			\
 	(vmi)->largest_chunk = 0;		\

@@ -13,6 +13,11 @@
 #include <linux/device.h>
 #include <linux/mmc/core.h>
 #include <linux/mod_devicetable.h>
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#define EXT_CSD_PRE_EOL_INFO_NORMAL     0x01
+#define EXT_CSD_PRE_EOL_INFO_WARNING     0x02
+#define EXT_CSD_PRE_EOL_INFO_URGENT     0x03
+#endif
 
 struct mmc_cid {
 	unsigned int		manfid;
@@ -44,6 +49,10 @@ struct mmc_csd {
 				write_partial:1,
 				write_misalign:1;
 };
+
+#define EXT_CSD_PRE_EOL_INFO_NORMAL     0x01
+#define EXT_CSD_PRE_EOL_INFO_WARNING     0x02
+#define EXT_CSD_PRE_EOL_INFO_URGENT     0x03
 
 struct mmc_ext_csd {
 	u8			rev;
@@ -104,6 +113,9 @@ struct mmc_ext_csd {
 	u8			raw_trim_mult;		/* 232 */
 	u8			raw_bkops_status;	/* 246 */
 	u8			raw_sectors[4];		/* 212 - 4 bytes */
+	u8			pre_eol_info;	/* 267 */
+	u8			device_life_time_est_typ_a;	/* 268 */
+	u8			device_life_time_est_typ_b;	/* 269 */
 
 	unsigned int            feature_support;
 #define MMC_DISCARD_FEATURE	BIT(0)                  /* CMD38 feature */
@@ -124,6 +136,7 @@ struct sd_ssr {
 	unsigned int		au;			/* In sectors */
 	unsigned int		erase_timeout;		/* In milliseconds */
 	unsigned int		erase_offset;		/* In milliseconds */
+	unsigned int		speed_class;
 };
 
 struct sd_switch_caps {
@@ -248,6 +261,7 @@ struct mmc_card {
 #define MMC_CARD_SDXC		(1<<6)		/* card is SDXC */
 #define MMC_CARD_REMOVED	(1<<7)		/* card has been removed */
 #define MMC_STATE_HIGHSPEED_200	(1<<8)		/* card is in HS200 mode */
+#define MMC_STATE_SLEEP		(1<<9)			/* card is in sleep state */
 #define MMC_STATE_DOING_BKOPS	(1<<10)		/* card is doing BKOPS */
 	unsigned int		quirks; 	/* card quirks */
 #define MMC_QUIRK_LENIENT_FN0	(1<<0)		/* allow SDIO FN0 writes outside of the VS CCCR range */
@@ -294,6 +308,11 @@ struct mmc_card {
 	struct dentry		*debugfs_root;
 	struct mmc_part	part[MMC_NUM_PHY_PARTITION]; /* physical partitions */
 	unsigned int    nr_parts;
+        struct dentry           *debugfs_sdxc;
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	u8 *cached_ext_csd;
+#endif
+
 };
 
 /*
@@ -415,6 +434,7 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_sd_card_uhs(c)	((c)->state & MMC_STATE_ULTRAHIGHSPEED)
 #define mmc_card_ext_capacity(c) ((c)->state & MMC_CARD_SDXC)
 #define mmc_card_removed(c)	((c) && ((c)->state & MMC_CARD_REMOVED))
+#define mmc_card_is_sleep(c)	((c)->state & MMC_STATE_SLEEP)
 #define mmc_card_doing_bkops(c)	((c)->state & MMC_STATE_DOING_BKOPS)
 
 #define mmc_card_set_present(c)	((c)->state |= MMC_STATE_PRESENT)
@@ -429,6 +449,9 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_set_removed(c) ((c)->state |= MMC_CARD_REMOVED)
 #define mmc_card_set_doing_bkops(c)	((c)->state |= MMC_STATE_DOING_BKOPS)
 #define mmc_card_clr_doing_bkops(c)	((c)->state &= ~MMC_STATE_DOING_BKOPS)
+#define mmc_card_set_sleep(c)	((c)->state |= MMC_STATE_SLEEP)
+
+#define mmc_card_clr_sleep(c)	((c)->state &= ~MMC_STATE_SLEEP)
 
 /*
  * Quirk add/remove for MMC products.
@@ -512,6 +535,7 @@ struct mmc_driver {
 	void (*remove)(struct mmc_card *);
 	int (*suspend)(struct mmc_card *);
 	int (*resume)(struct mmc_card *);
+	int (*shutdown)(struct mmc_card *);
 };
 
 extern int mmc_register_driver(struct mmc_driver *);
